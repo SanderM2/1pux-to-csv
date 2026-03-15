@@ -39,17 +39,16 @@ const escapeCSVValue = (value: string | number) => {
     return value.toString();
   }
 
-  // Just return the value if there's no special character
-  if (
-    !value.includes(',') &&
-    !value.includes(' ') &&
-    !value.includes('"') &&
-    !value.includes('\n')
-  ) {
-    return value;
-  }
+  // Quote only when necessary: comma, double-quote or newline
+  const needsQuoting =
+    value.includes(',') ||
+    value.includes('"') ||
+    value.includes('\n') ||
+    value.includes(' ');
+  if (!needsQuoting) return value;
 
-  return `"${value.replace(/"/g, '""').replace(/\n/g, '  ')}"`;
+  // Escape double quotes by doubling them. Preserve newlines inside quotes.
+  return `"${value.replace(/"/g, '""')}"`;
 };
 
 type RowData = {
@@ -202,7 +201,9 @@ export const parseToRowData = (
   return rowData;
 };
 
-const convertDataToRow = (rowData: RowData) => {
+export const CSV_HEADER = 'name,tags,url,username,password,notes,extraFields';
+
+export const convertDataToRow = (rowData: RowData) => {
   const row = [
     rowData.name,
     rowData.tags,
@@ -223,9 +224,24 @@ export const convert1PuxDataToCSV = async (onePuxData: OnePuxData) => {
 
   onePuxData.accounts.forEach((account) => {
     account.vaults.forEach((vault) => {
-      vault.items.forEach((item) => {
-        if (item.item && !item.item.trashed) {
-          const rowData = parseToRowData(item.item, [vault.attrs.name]);
+      vault.items.forEach((entry) => {
+        // entry can be either { item: { ... } } or the raw item object itself
+        // it can also be a file entry like { file: { attrs: ... }, path: ... }
+        const rawEntry: any = entry as any;
+
+        // Prefer wrapped item (`entry.item`) if present
+        let actualItem = rawEntry.item || null;
+
+        // If there's no wrapped item but the entry itself looks like an item (has overview/details), use it
+        if (!actualItem && rawEntry.overview && rawEntry.details) {
+          actualItem = rawEntry as any;
+        }
+
+        // If still no actualItem (e.g., file-only entry), skip
+        if (!actualItem) return;
+
+        if (!actualItem.trashed) {
+          const rowData = parseToRowData(actualItem, [vault.attrs.name]);
 
           if (rowData) {
             rows.push(convertDataToRow(rowData));
