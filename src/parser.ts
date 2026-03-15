@@ -108,12 +108,15 @@ export const parseToRowData = (
     extraFields: [],
   };
 
-  // Skip documents
+  // If this is a document-only item (no login fields) include it anyway,
+  // but annotate `notes` with the document filename so it isn't lost.
   if (
     item.details.documentAttributes &&
     item.details.loginFields.length === 0
   ) {
-    return;
+    const docName = item.details.documentAttributes.fileName || '';
+    rowData.notes = [rowData.notes, docName].filter(Boolean).join('\n');
+    // continue processing (no early return)
   }
 
   // Extract username, password, and some extraFields
@@ -203,13 +206,33 @@ export const parseToRowData = (
 
 export const CSV_HEADER = 'name,tags,url,username,password,notes,extraFields';
 
+export const APPLE_CSV_HEADER = 'Title,URL,Username,Password,Notes,OTPAuth';
+
+export const convertRowDataToAppleRow = (rowData: RowData) => {
+  // Extract the first TOTP/OTPAuth field if present
+  const otpField = rowData.extraFields.find((f) => f.type === 'totp');
+  const otpAuth = otpField ? otpField.value : '';
+
+  const username = rowData.username && rowData.username !== '' ? rowData.username : 'empty-username';
+  const password = rowData.password && rowData.password !== '' ? rowData.password : 'empty-password';
+
+  const row = [rowData.name, rowData.url, username, password, rowData.notes, otpAuth]
+    .map(escapeCSVValue)
+    .join(',');
+
+  return row;
+};
+
 export const convertDataToRow = (rowData: RowData) => {
+  const username = rowData.username && rowData.username !== '' ? rowData.username : 'empty-username';
+  const password = rowData.password && rowData.password !== '' ? rowData.password : 'empty-password';
+
   const row = [
     rowData.name,
     rowData.tags,
     rowData.url,
-    rowData.username,
-    rowData.password,
+    username,
+    password,
     rowData.notes,
     JSON.stringify(rowData.extraFields),
   ]
@@ -219,36 +242,44 @@ export const convertDataToRow = (rowData: RowData) => {
   return row;
 };
 
-export const convert1PuxDataToCSV = async (onePuxData: OnePuxData) => {
-  const rows = ['name,tags,url,username,password,notes,extraFields'];
-
+const iterateItems = (
+  onePuxData: OnePuxData,
+  callback: (actualItem: any, vaultName: string) => void,
+) => {
   onePuxData.accounts.forEach((account) => {
     account.vaults.forEach((vault) => {
       vault.items.forEach((entry) => {
-        // entry can be either { item: { ... } } or the raw item object itself
-        // it can also be a file entry like { file: { attrs: ... }, path: ... }
         const rawEntry: any = entry as any;
-
-        // Prefer wrapped item (`entry.item`) if present
         let actualItem = rawEntry.item || null;
-
-        // If there's no wrapped item but the entry itself looks like an item (has overview/details), use it
         if (!actualItem && rawEntry.overview && rawEntry.details) {
           actualItem = rawEntry as any;
         }
-
-        // If still no actualItem (e.g., file-only entry), skip
         if (!actualItem) return;
-
         if (!actualItem.trashed) {
-          const rowData = parseToRowData(actualItem, [vault.attrs.name]);
-
-          if (rowData) {
-            rows.push(convertDataToRow(rowData));
-          }
+          callback(actualItem, vault.attrs.name);
         }
       });
     });
+  });
+};
+
+export const convert1PuxDataToCSV = async (onePuxData: OnePuxData) => {
+  const rows = [CSV_HEADER];
+
+  iterateItems(onePuxData, (actualItem, vaultName) => {
+    const rowData = parseToRowData(actualItem, [vaultName]);
+    if (rowData) rows.push(convertDataToRow(rowData));
+  });
+
+  return rows.join('\n');
+};
+
+export const convert1PuxDataToAppleCSV = async (onePuxData: OnePuxData) => {
+  const rows = [APPLE_CSV_HEADER];
+
+  iterateItems(onePuxData, (actualItem, vaultName) => {
+    const rowData = parseToRowData(actualItem, [vaultName]);
+    if (rowData) rows.push(convertRowDataToAppleRow(rowData));
   });
 
   return rows.join('\n');
